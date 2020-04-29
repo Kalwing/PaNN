@@ -1,6 +1,6 @@
 import PIL
 import cv2
-from PIL import Image
+from skimage import io
 import numpy as np
 import matplotlib.pyplot as plt
 import random
@@ -72,10 +72,13 @@ for i in tqdm(range(N_IMAGE)):
     make_bot_right_square(img)
     make_top_right_square(img)
 
-    gt = Image.fromarray(img)
+    gt = np.maximum(0, img)
 
     noise_amount = random.randint(0, 96)
-    gaussian = np.maximum(1, np.random.normal(10, noise_amount, (IMG_WIDTH, IMG_WIDTH))).astype(np.uint8)
+    gaussian = np.maximum(
+        1,
+        np.random.normal(10, noise_amount, (IMG_WIDTH, IMG_WIDTH))
+    ).astype(np.uint8)
 
     blur_size = tuple([
         random.randrange(0, IMG_WIDTH//3, 2) + 1 for x in range(2)
@@ -83,7 +86,7 @@ for i in tqdm(range(N_IMAGE)):
 
     img = cv2.GaussianBlur(img, tuple(blur_size),0)
     img += gaussian
-    img = Image.fromarray(img)
+    img = np.maximum(0, img)
 
     if i < VAL_ID:
         path = DATA_DIR/"train"
@@ -94,7 +97,9 @@ for i in tqdm(range(N_IMAGE)):
     os.makedirs(path/'gt', exist_ok=True)
     os.makedirs(path/'img', exist_ok=True)
 
-    gt.save(path/'gt'/F"{i}.png")
-    img.save(path/'img'/F"{i}.png")
+    # assert np.max(gt) <= 1 and np.max(img) <= 1, (np.max(gt), np.max(img) )
+    # assert len(np.unique(gt)) >= 2 and len(np.unique(img)) >= 2, "Image is binary"
+    io.imsave(path/'gt'/F"{i}.png", gt)
+    io.imsave(path/'img'/F"{i}.png", img)
 
 

@@ -57,7 +57,53 @@ class ImgClassifDataset(Dataset):
             for label, f in zip(self.labels, self.dist)
         ]))
 
-r = ImgClassifDataset('MNIST', split_type="test")[0]
+
+class ImgPredDataset(Dataset):
+    def __init__(self, name, transform=None, split_type="train"):
+        """
+        Args:
+            transform (callable, optional): Transform to be applied on a sample.
+                Defaults to None.
+        """
+        self.transform = transform
+        split_id = ['train', 'val', 'test'].index(split_type)
+        self.gts = list((DATA_FOLDER/name/SPLIT_FOLDERS[split_id]/
+                    GT_FOLDER).iterdir())
+        self.gts.sort(key=lambda p: p.stem)
+        self.imgs = list((DATA_FOLDER/name/SPLIT_FOLDERS[split_id]/
+                     IMG_FOLDER).iterdir())
+        self.imgs.sort(key=lambda p: p.stem)
+
+        assert self.imgs[0].stem == self.gts[0].stem, \
+               F"Path misordered: {self.imgs[:3]}!={self.gts[:3]}"
+
+
+    def __len__(self):
+        return len(self.gts)
+
+    def __getitem__(self, idx):
+        img = io.imread(self.imgs[idx]).astype('float64')
+        if len(img.shape) == 2:
+            img = np.expand_dims(img, axis=-1)
+        img = img.transpose((2, 0, 1)) / 255.
+
+        gt = io.imread(self.gts[idx]).astype('float64')
+        if len(gt.shape) == 2:
+            gt = np.expand_dims(gt, axis=-1)
+        gt = gt.transpose((2, 0, 1)) / 255.
+
+        assert np.max(gt) <= 1 and np.max(img) <= 1, (np.max(gt), np.max(img) )
+        assert len(np.unique(gt)) > 2 and len(np.unique(img)) > 2, "Image is void"
+
+
+        assert gt.shape == img.shape, self.gts[idx]
+
+
+        if self.transform:
+            img = self.transform(img)
+            gt = self.transform(gt)
+        return (torch.from_numpy(img).type(torch.FloatTensor),
+                torch.from_numpy(gt).type(torch.long))
 
 def get_dataloader(dataset):
     return DataLoader(dataset, batch_size=BATCH_SIZE)

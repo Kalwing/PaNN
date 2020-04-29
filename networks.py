@@ -8,7 +8,6 @@ class Net(nn.Module):
         super(Net, self).__init__()
 
         self.v = torch.nn.Parameter(torch.tensor([1.]))
-        print(dir(self.v))
         self.v.requires_grad = False
 
         self.conv1 = nn.Conv2d(1, 16, 5)
@@ -40,9 +39,9 @@ class Net(nn.Module):
 
 def conv2DBlock(input_size, output_size):
     return nn.Sequential(
-        nn.Conv2d(input_size, output_size, 3),
+        nn.Conv2d(input_size, output_size, 3, padding=1),
         nn.ReLU(),
-        nn.Conv2d(output_size, output_size, 3),
+        nn.Conv2d(output_size, output_size, 3, padding=1),
         nn.ReLU(),
     )
 
@@ -97,3 +96,36 @@ class UNet(nn.Module):
         x0 = copy_crop(x0, self.upconv3(x1))
         x0 = self.convU4(x0)
         return self.outconv(x0)
+
+
+class SmallUNet(nn.Module):
+    def __init__(self, n_channels, n_classes):
+        super(SmallUNet, self).__init__()
+        self.convD1 = conv2DBlock(n_channels, 64)
+        self.pool = nn.MaxPool2d(2)
+        self.convD2 = conv2DBlock(64, 128)
+
+        self.bridge = conv2DBlock(128, 256)
+        UpConv = partial(nn.ConvTranspose2d, kernel_size=2, stride=2)
+        self.upconv0 = UpConv(256, 128)
+
+
+        self.convU1 = conv2DBlock(256, 128)
+        self.upconv1 = UpConv(128, 64)
+        self.convU2 = conv2DBlock(128, 64)
+        self.outconv = nn.Conv2d(64, n_classes, 1)
+
+
+    def forward(self, x):
+        # Encoding
+        x0 = self.convD1(x)
+        x1 = self.convD2(self.pool(x0))
+        x2 = self.bridge(self.pool(x1))
+
+        # Decoding
+        x1 = copy_crop(x1, self.upconv0(x2))
+        x1 = self.convU1(x1)
+        x0 = copy_crop(x0, self.upconv1(x1))
+        x0 = self.convU2(x0)
+        out = self.outconv(x0)
+        return F.sigmoid(out)

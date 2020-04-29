@@ -14,10 +14,11 @@ from matplotlib import pyplot as plt
 from torchsummary import summary
 from tqdm import tqdm
 
+import dataloader
 from config import (DATA_NAME, LOSS, MODEL_NAME, N_EPOCH, NET, NET_PARAM,
                     OPTIM, RESULTS_FOLDER, TEST_CSV_NAME, TRAIN_CSV_NAME,
-                    TRAINING_NAME, SAVE_INTERVAL, EARLY_STOP)
-from dataloader import ImgClassifDataset, get_dataloader
+                    TRAINING_NAME, SAVE_INTERVAL, EARLY_STOP, DATASET_TYPE)
+from dataloader import get_dataloader
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print("Training on ", device)
@@ -39,7 +40,9 @@ def format_fields(fields, precision=5):
     r = [fields[0]]
     f = '{:.' + F'{precision}f' + '}'
     for field in fields[1:]:
-        if type(field) is torch.Tensor:
+        if not field:
+            continue
+        elif type(field) is torch.Tensor:
             r.append(f.format(field))
         elif type(field) is dict:
             r.append(*[f.format(field[name]) for name in field.keys()])
@@ -68,7 +71,7 @@ def init_csv(path, val=False, test=False, metrics=None):
         if val or test:
             name_str = F"Mean {'Val' if val else 'Test'} "
             fields.append(name_str+ "Loss")
-            if metrics is not None:
+            if metrics:
                 fields.append(*[name_str + name for name in metrics.keys()])
         writer.writerow(fields)
 
@@ -181,12 +184,12 @@ def run_without_train(loader, net, criterion, metrics, val=True):
             inputs, labels = data[0].to(device), data[1].to(device)
             outputs = net(inputs)
 
-            _, predicted = torch.max(outputs.data, 1) #TODO: To remove when dealing with image
+            # _, predicted = torch.max(outputs.data, 1) #TODO: To remove when dealing with image
             loss = criterion(outputs, labels)
             losses.append(loss)
 
             metrics_val = []
-            for name in metrics_names:
+            for name in metrics_names: #TODO ADAPT TO SEG
                 v = metrics[name](predicted.type(torch.float), labels)
                 metrics_values[name].append(v)
                 metrics_val.append(v)
@@ -208,9 +211,9 @@ def save_field_in_csv(path, training_data):
 
 def run(trainloader, net, criterion, optimizer, val_loader=None,
         metrics=None, early_stop_patience=None, save_every=None):
-    if (RESULTS_FOLDER/TRAINING_NAME/MODEL_NAME).exists():
-        print("This scenario was already trained", file=sys.stderr)
-        return
+    # if (RESULTS_FOLDER/TRAINING_NAME/MODEL_NAME).exists():
+    #     print("This scenario was already trained", file=sys.stderr)
+    #     return
 
     if not glob(str(RESULTS_FOLDER/TRAINING_NAME/"init"/"*.pth")):
         # train the initial segmentation model
@@ -240,9 +243,9 @@ def run(trainloader, net, criterion, optimizer, val_loader=None,
         print(initfile)
         net.load_state_dict(torch.load(initfile))
     # Compute the prior distribution
-    q = train_set.dist
-    v = -1/q
-    mu = -1/(1-q)
+    # q = train_set.dist
+    # v = -1/q
+    # mu = -1/(1-q)
 
 
     # Update segmentation model
@@ -252,18 +255,17 @@ def run(trainloader, net, criterion, optimizer, val_loader=None,
 # TODO: Add comment, save fig of loss + metrics
 if __name__ == '__main__':
     # DATALOADERS
-    train_set = ImgClassifDataset(DATA_NAME, split_type='train')
+    exec(F"train_set = dataloader.{DATASET_TYPE}(DATA_NAME, split_type='train')")
     train_loader = get_dataloader(train_set)
-    train_set.print_dist()
-    val_set = ImgClassifDataset(DATA_NAME, split_type='val')
+    exec(F"val_set = dataloader.{DATASET_TYPE}(DATA_NAME, split_type='val')")
     val_loader = get_dataloader(val_set)
-    test_set = ImgClassifDataset(DATA_NAME, split_type='test')
+    exec(F"test_set = dataloader.{DATASET_TYPE}(DATA_NAME, split_type='test')")
     test_loader = get_dataloader(test_set)
 
     # NEURAL NET SETUP
     net = NET(**NET_PARAM)
     net.to(device)
-    criterion = LOSS()
+    criterion = LOSS(net)
     optimizer = OPTIM(net.parameters())
 
     # Outputing the parameters of the networks in the results folder
@@ -273,7 +275,7 @@ if __name__ == '__main__':
         pass
     with open(RESULTS_FOLDER/TRAINING_NAME/'summary.md', 'w') as fout:
         shape = train_set[0][0].shape
-        shape = (1,404,2013) # Todo Remove
+        shape = (1, 128,128)
         fout.write(F"Trained the {datetime.now()}\n\n")
         fout.write(F"\n*Data*: `{DATA_NAME}`  \n")
         fout.write(F"\n*Network*: \n```python\n{net}\n```  ")
@@ -281,13 +283,17 @@ if __name__ == '__main__':
         fout.write(F"\n*Optimizer*: \n```python\n{optimizer}\n```  ")
         s = sys.stdout
         sys.stdout = fout # A bit hacky, but allow summary to be printed in fout
-        fout.write(F"\n\n*Summary*:\n```js\n")
+        fout.write(F"\n\n*Summary*: (for input of size {shape})\n```js\n")
         summary(net, shape)
         sys.stdout = s
         fout.write(F"\n```")
+        fig, ax = plt.subplots(2)
+        print(train_set[0][0].transpose(2, 0).squeeze(-1).shape)
+        ax[0].imshow(train_set[0][0].transpose(2, 0).squeeze(-1)*255.)
+        ax[1].imshow(train_set[0][1].transpose(2, 0).squeeze(-1)*255.)
+        plt.show()
 
-
-    metrics={'MSE': nn.MSELoss()}
+    metrics={}#'MSE': nn.MSELoss()} #TODO ADD TO CONFIG
     # TRAINING LOOP
     run(train_loader, net, criterion, optimizer, val_loader=val_loader,
         metrics=metrics, early_stop_patience=EARLY_STOP,
