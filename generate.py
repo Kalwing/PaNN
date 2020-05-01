@@ -22,7 +22,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 def make_left_square(img):
     center = (random.randint(10, IMG_WIDTH//2 - 1), random.randint(10, IMG_WIDTH//2 - 1))
     radius = random.randint(7, 17)
-    img = cv2.circle(img, center, radius, 192, -1)
+    img = cv2.circle(img, center, radius, 255, -1)
 
 # def draw_triangle(img, center, width):
 #     """doesn't work yet"""
@@ -61,8 +61,8 @@ def make_bot_right_square(img):
     )
     radius = random.randint(6, 17)
     shift = np.random.randint(min(4, radius*0.5), radius*0.85, (2,))
-    cv2.circle(img, tuple(center), radius, 128, -1)
-    cv2.circle(img, tuple(center+shift), radius, 128, -1)
+    cv2.circle(img, tuple(center), radius, 255, -1)
+    cv2.circle(img, tuple(center+shift), radius, 255, -1)
 
 
 

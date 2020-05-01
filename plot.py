@@ -1,27 +1,56 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+import pandas as pd
+from pathlib import Path
 
 
-# TODO: Generate training loss plot and val loss/DSC
-fig, ax = plt.subplots((1, 2), figsize=(15, 7.5))
-for path, label in paths_labels:
-    try:
-        npypath = os.path.join(path, PATH, SUPERVISION_LVL, F'{"val_dice" if VAL else "tra_loss"}.npy')
-        dice = np.load(npypath)
-    except FileNotFoundError:
-        continue
-    curve = np.mean(dice, axis=1)[:,1] if VAL else np.mean(dice, axis=1)
-    plt.plot(range(dice.shape[0]), curve, label=label)
-    print(dice.shape)
+def plot_results(csvs, save_path=None):
+    if type(csvs) is not list:
+        csvs = [csvs]
+    for csv in csvs:
+        df = pd.read_csv(csv)
+        n = len(df.columns.values)
+        fig, ax = plt.subplots(1, n - 1, figsize=(15, 5))
+        for i in range(1, n):
+            ax[i - 1].plot(df.iloc[:, 0], df.iloc[:, i])
+            ax[i - 1].set_title(f"{df.columns.values[i]} per {df.columns.values[0]}")
+        if save_path is None:
+            plt.show()
+        else:
+            plt.savefig(Path(save_path) / f"{csv.stem}.png")
+        purge_plt()
 
 
+def plot_pred(dataset, model, n=2, device=None, save_path=None):
+    inputs, labels = dataset[:n]
 
-ax.set_xlabel("Epochs")
-ax.set_ylabel("Validation Dice" if VAL else "Training loss")
-ax.legend()
-plt.ylim(bottom=0)
-plt.xlim(left=0)
-plt.savefig(F"merged/{PATH.split('/')[-1]}_{SUPERVISION_LVL}_{'val_dice' if VAL else 'tra_loss'}_curves.png")
-plt.rcParams.update({'font.size': 30})
-plt.show()
+    fig, ax = plt.subplots(n, 3)
+    ax[0, 0].set_title("Input")
+    ax[0, 1].set_title("Ground Truth")
+    ax[0, 2].set_title("Prediction")
+    for i, input_ in enumerate(inputs):
+        ax[i, 0].imshow(torch_to_img(inputs[i]))
+        ax[i, 1].imshow(torch_to_img(labels[i]))
+
+        to_predict = input_.unsqueeze(0)
+        if device is not None:
+            to_predict = to_predict.to(device)
+        output = model(to_predict)[0]
+        output = torch_to_img(output.cpu()).detach().numpy()
+        ax[i, 2].imshow(output)
+    if save_path is None:
+        plt.show()
+    else:
+        plt.savefig(Path(save_path) / f"{save_path.stem}_prediction.png")
+    purge_plt()
+
+
+def torch_to_img(tensor):
+    return tensor.transpose(2, 0).squeeze(-1) * 255.0
+
+
+def purge_plt():
+    plt.clf()
+    plt.cla()
+    plt.close()

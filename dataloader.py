@@ -82,28 +82,43 @@ class ImgPredDataset(Dataset):
         return len(self.gts)
 
     def __getitem__(self, idx):
-        img = io.imread(self.imgs[idx]).astype('float64')
-        if len(img.shape) == 2:
-            img = np.expand_dims(img, axis=-1)
-        img = img.transpose((2, 0, 1)) / 255.
+        if isinstance(idx, slice):
+            start = idx.start if idx.start is not None else 0
+            stop = idx.stop if idx.stop is not None else -1
+            step = idx.step if idx.step is not None else 1
+            idx = range(start, stop, step)
+        else:
+            idx = [idx]
 
-        gt = io.imread(self.gts[idx]).astype('float64')
-        if len(gt.shape) == 2:
-            gt = np.expand_dims(gt, axis=-1)
-        gt = gt.transpose((2, 0, 1)) / 255.
+        imgs = []
+        gts = []
+        for id_ in idx:
+            img = io.imread(self.imgs[id_]).astype('float64')
+            if len(img.shape) == 2:
+                img = np.expand_dims(img, axis=-1)
+            img = img.transpose((2, 0, 1)) / 255.
 
-        assert np.max(gt) <= 1 and np.max(img) <= 1, (np.max(gt), np.max(img) )
-        assert len(np.unique(gt)) > 2 and len(np.unique(img)) > 2, "Image is void"
+            gt = io.imread(self.gts[id_]).astype('float64')
+            if len(gt.shape) == 2:
+                gt = np.expand_dims(gt, axis=-1)
+            gt = gt.transpose((2, 0, 1)) / 255.
+
+            assert np.max(gt) <= 1 and np.max(img) <= 1, (np.max(gt), np.max(img) )
+            assert len(np.unique(gt)) > 1 and len(np.unique(img)) > 2, "Image is binary or gt is empty"
 
 
-        assert gt.shape == img.shape, self.gts[idx]
+            assert gt.shape == img.shape, self.gts[id_]
 
 
-        if self.transform:
-            img = self.transform(img)
-            gt = self.transform(gt)
-        return (torch.from_numpy(img).type(torch.FloatTensor),
-                torch.from_numpy(gt).type(torch.long))
+            if self.transform:
+                img = self.transform(img)
+                gt = self.transform(gt)
+            imgs.append(torch.from_numpy(img).type(torch.FloatTensor))
+            gts.append(torch.from_numpy(gt).type(torch.FloatTensor))
+        if len(imgs) == 1:
+            return imgs[0], gts[0]
+        else:
+            return torch.stack(imgs), torch.stack(gts)
 
 def get_dataloader(dataset):
     return DataLoader(dataset, batch_size=BATCH_SIZE)
