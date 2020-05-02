@@ -31,14 +31,19 @@ from config import (
     EARLY_STOP,
     DATASET_TYPE,
     METRICS,
+    SEED,
 )
 from dataloader import get_dataloader
 from plot import plot_results, plot_pred
 
+
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print("Training on ", device)
 
-BAR_WIDTH = 100
+BAR_WIDTH = 110  # Width of the output
 
 
 def format_fields(fields, precision=5):
@@ -61,7 +66,7 @@ def format_fields(fields, precision=5):
         elif type(field) is torch.Tensor:
             r.append(f.format(field))
         elif type(field) is dict:
-            r.append(*[f.format(field[name]) for name in field.keys()])
+            r.extend([f.format(field[name]) for name in field.keys()])
         else:
             r.append(f.format(field))
     return r
@@ -89,7 +94,7 @@ def init_csv(path, val=False, test=False, metrics=None):
             name_str = f"Mean {'Val' if val else 'Test'} "
             fields.append(name_str + "Loss")
             if metrics:
-                fields.append(*[name_str + name for name in metrics.keys()])
+                fields.extend([name_str + name for name in metrics.keys()])
         writer.writerow(fields)
 
 
@@ -219,7 +224,6 @@ def run_without_train(loader, net, criterion, metrics, val=True):
         for i, data in enumerate(progress):
             inputs, labels = data[0].to(device), data[1].to(device)
             outputs = net(inputs)
-
             # _, predicted = torch.max(outputs.data, 1) #TODO: To remove when dealing with image
             loss = criterion(outputs, labels)
             losses.append(loss)
@@ -231,10 +235,11 @@ def run_without_train(loader, net, criterion, metrics, val=True):
                 metrics_val.append(v)
             # print statistics
             statistics_output.update(loss, zip(metrics_names, metrics_val))
-    mean_loss = sum(losses) / len(losses)
-    mean_metrics = {
-        name: sum(metrics_values[name]) / len(losses) for name in metrics_names
-    }
+        mean_loss = sum(losses) / len(losses)
+        mean_metrics = {
+            name: sum(metrics_values[name]) / len(losses)
+            for name in metrics_names
+        }
     return mean_loss, mean_metrics
 
 
@@ -247,7 +252,7 @@ def save_field_in_csv(path, training_data):
 
 
 def run(
-    trainloader,
+    train_init_loader,
     net,
     criterion,
     optimizer,
@@ -260,10 +265,10 @@ def run(
     #     print("This scenario was already trained", file=sys.stderr)
     #     return
 
-    if not glob(str(RESULTS_FOLDER / TRAINING_NAME / "*.pth")):
+    if not glob(str(RESULTS_FOLDER / TRAINING_NAME / "init" / "*.pth")):
         # train the initial segmentation model
         training = train(
-            trainloader,
+            train_init_loader,
             net,
             criterion,
             optimizer,
@@ -286,17 +291,23 @@ def run(
         save_field_in_csv(
             RESULTS_FOLDER / TRAINING_NAME / "init" / TRAIN_CSV_NAME, training
         )  # The training is done here
-        print("Finished init training")
+        torch.save(
+            net.state_dict(),
+            RESULTS_FOLDER / TRAINING_NAME / "init" / MODEL_NAME,
+        )
+        print("Finished init training")  # TODO: log final result of training
+
     else:
         init_path = RESULTS_FOLDER / TRAINING_NAME / "init"
         models = [path for path in init_path.iterdir() if path.suffix == ".pth"]
         initfile = sorted(models)[-1]
-        print(initfile)
+        print("Loaded:", initfile)
         net.load_state_dict(torch.load(initfile))
+
     # Compute the prior distribution
     # q = train_set.dist
-    # v = -1/q
-    # mu = -1/(1-q)
+    # v = -1 / q
+    # mu = -1 / (1 - q)
 
     # Update segmentation model
 
@@ -360,7 +371,7 @@ if __name__ == "__main__":
     plot_pred(
         test_set,
         net,
-        n=5,
+        n=3,
         device=device,
         save_path=RESULTS_FOLDER / TRAINING_NAME,
     )

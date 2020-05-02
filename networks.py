@@ -4,12 +4,33 @@ import torch.nn.functional as F
 from functools import partial
 
 
+def loss_param_init(func):
+    def wrap(self, *args):
+        func(self, *args)
+        for param in self.loss_parameters:
+            param.requires_grad = False
+
+        self.net_parameters = [
+            p
+            for p in self.parameters()
+            if not any(
+                [
+                    (p == p2).all()
+                    for p2 in self.loss_parameters
+                    if p.shape == p2.shape
+                ]
+            )
+        ]
+
+    return wrap
+
+
 class Net(nn.Module):
+    @loss_param_init
     def __init__(self):
         super(Net, self).__init__()
 
         self.v = torch.nn.Parameter(torch.tensor([1.0]))
-        self.v.requires_grad = False
 
         self.conv1 = nn.Conv2d(1, 16, 5)
         self.pool = nn.MaxPool2d(2, 2)
@@ -20,14 +41,6 @@ class Net(nn.Module):
 
         self.loss_parameters = [
             self.v,
-        ]
-        self.net_parameters = [
-            self.conv1,
-            self.pool,
-            self.conv2,
-            self.fc1,
-            self.fc2,
-            self.fc3,
         ]
 
     def forward(self, x):
@@ -134,4 +147,20 @@ class SmallUNet(nn.Module):
         x0 = copy_crop(x0, self.upconv1(x1))
         x0 = self.convU2(x0)
         out = self.outconv(x0)
-        return torch.sigmoid(out)
+        return out
+
+
+class SmallUNetZhou(SmallUNet):
+    @loss_param_init
+    def __init__(self, n_channels, n_classes):
+        super(SmallUNetZhou, self).__init__(n_channels, n_classes)
+
+        self.v = torch.nn.Parameter(torch.tensor([1.0]))
+        self.mu = torch.nn.Parameter(torch.tensor([5.0]))
+        self.loss_parameters = [self.v, self.mu]
+
+    def switch_to_loss_training(self, boolean):
+        for p in self.loss_parameters:
+            p.requires_grad = boolean
+        for p in self.net_parameters:
+            p.requires_grad = not boolean
