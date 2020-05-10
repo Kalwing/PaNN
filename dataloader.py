@@ -220,10 +220,11 @@ def compute_distribution(dataloader):
     one_hot_func = partial(one_hot_encode, n_classes=torch.max(ref) + 1, type=ref.type())
     ref = one_hot_func(ref)
 
-    gt_sum = torch.zeros(ref.shape)
+    gt_sum = torch.zeros(ref.shape[1:])
     n_pixel = ref.shape[-1] * ref.shape[-2]
     for _, gt in dataloader:
-        gt_sum = gt_sum + one_hot_func(gt)
-    q = torch.einsum("blhw->l", gt_sum) / n_pixel
+        one_hot = torch.sum(one_hot_func(gt), dim=0)
+        gt_sum = gt_sum + one_hot / one_hot.shape[0]
+    q = torch.einsum("lhw->l", gt_sum) / n_pixel
 
     return q / len(dataloader.dataset)

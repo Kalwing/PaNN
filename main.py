@@ -20,7 +20,9 @@ from config import (
     PARTIAL_IDS,
     LOSS,
     MODEL_NAME,
-    N_EPOCH,
+    N_EPOCH_1,
+    N_EPOCH_2_ASC,
+    N_EPOCH_2_DESC,
     NET,
     NET_PARAM,
     OPTIM,
@@ -33,6 +35,7 @@ from config import (
     DATASET_TYPE,
     METRICS,
     SEED,
+    SECOND_STAGE_ITER,
 )
 from dataloader import get_dataloader
 from plot import plot_results, plot_pred, show_data
@@ -137,6 +140,7 @@ def train_init(
     criterion,
     optimizer,
     val_loader=None,
+    n_epoch=0,
     metrics=None,
     early_stop_patience=None,
     save_every=None,
@@ -146,9 +150,9 @@ def train_init(
     i_without_improv = 0
     last_best_train_loss = float("inf")
     train_loss = float("inf")
-    while epoch < N_EPOCH and i_without_improv < early_stop_patience:
+    while epoch < n_epoch and i_without_improv < early_stop_patience:
         train_progress = tqdm(train_loader, ncols=BAR_WIDTH)
-        train_progress.set_description(f"Train {epoch}/{N_EPOCH}")
+        train_progress.set_description(f"Train {epoch}/{n_epoch}")
         statistics_output = stat_holder(train_progress, len_set=len(train_loader))
 
         losses = []
@@ -201,39 +205,54 @@ def train_init(
         epoch += 1
 
 
-def train(
+def train_with_partial(
     train_loader,
     net,
     criterion,
     optimizer,
     val_loader=None,
+    n_epoch=0,
     metrics=None,
     early_stop_patience=None,
     save_every=None,
     save_path="",
-):
+):  # Yeah ok it's ugly and i could refactor train with partial into train_init but TODO I guess
     epoch = 0
     i_without_improv = 0
     last_best_train_loss = float("inf")
     train_loss = float("inf")
-    while epoch < N_EPOCH and i_without_improv < early_stop_patience:
+    while epoch < n_epoch and i_without_improv < early_stop_patience:
         train_progress = tqdm(train_loader, ncols=BAR_WIDTH)
-        train_progress.set_description(f"Train {epoch}/{N_EPOCH}")
+        train_progress.set_description(f"Train {epoch}/{n_epoch}")
         statistics_output = stat_holder(train_progress, len_set=len(train_loader))
 
         losses = []
-        for i, full_data, partials_data in enumerate(
-            train_progress
-        ):  # Loop over the dataset
+        for i, full_partial_data in enumerate(train_progress):  # Loop over the dataset
+            full_data, partials_data = full_partial_data
             # get the inputs; data is a list of [inputs, labels]
-            inputs, labels = full_data[0].to(device), full_data[1].to(device)
+            inputs_full, labels_full = full_data[0].to(device), full_data[1].to(device)
+            inputs_partials, labels_partials = list(
+                zip(
+                    *[
+                        (partial_data[0].to(device), partial_data[1].to(device))
+                        for partial_data in partials_data
+                    ]
+                )
+            )
 
             # zero the parameter gradients
             optimizer.zero_grad()
 
             # forward + backward + optimize
-            outputs = net(inputs)
-            loss = criterion(outputs, labels)
+            outputs_full = net(inputs_full)
+            outputs_partials = [net(inputs_partial) for inputs_partial in inputs_partials]
+            loss = criterion(
+                outputs_full,
+                labels_full,
+                outputs_partials,
+                labels_partials,
+                labels_partials,
+            )
             losses.append(loss)
             loss.backward()
             optimizer.step()
@@ -325,6 +344,7 @@ def run(
     #     return
 
     if not glob(str(RESULTS_FOLDER / TRAINING_NAME / "init" / "*.pth")):
+        os.makedirs(RESULTS_FOLDER / TRAINING_NAME / "init", exist_ok=True)
         # train the initial segmentation model
         training = train_init(
             train_loader,
@@ -332,16 +352,13 @@ def run(
             criterion,
             optimizer,
             val_loader,
+            N_EPOCH_1,
             metrics,
             early_stop_patience=early_stop_patience,
             save_every=save_every,
             save_path="init",
         )
         #  Create the appropriate fields in the csv
-        try:
-            os.makedirs(RESULTS_FOLDER / TRAINING_NAME / "init")
-        except FileExistsError:
-            pass
         init_csv(
             RESULTS_FOLDER / TRAINING_NAME / "init" / TRAIN_CSV_NAME,
             val=True,
@@ -366,18 +383,70 @@ def run(
     print("-> Computing the initial parameters associated to the primal variables:")
     q = dataloader.compute_distribution(train_loader.full_loader)
     # TODO: output q
-    net.nu.copy_(-1 / q)
-    net.mu.copy_(-1 / (1 - q))
+    net.nu.copy_(-1 / (q + 1e-10))
+    net.mu.copy_(-1 / (1 - q + 1e-10))
 
     # Update segmentation model
-    # TODO: Train with Jp and Jc = 0
-    # TODO; Define Jp
-    # TODO: define JC
+    criterion.use_partial()
+    print("SECOND STAGE")
+    for iter in range(SECOND_STAGE_ITER):
+        base_path = RESULTS_FOLDER / TRAINING_NAME / "2nd_stage" / str(iter)
+
+        # Compute YP
+        with torch.no_grad():
+            pass
+            # TODO: new dataloader saving image in data for each pred (=Yp in the paper)
+
+        # update mu and nu
+        # print("ASCENT")
+        # net.switch_to_loss_training(True)
+        # criterion.switch_to_ascent()
+
+        # training = train_with_partial(
+        #     train_loader,
+        #     net,
+        #     criterion,
+        #     optimizer,
+        #     val_loader,
+        #     N_EPOCH_2_ASC,
+        #     metrics,
+        #     early_stop_patience=early_stop_patience,
+        #     save_every=save_every,
+        #     save_path="init",
+        # )
+        # os.makedirs(base_path / "ascent", exist_ok=True)
+        # init_csv(
+        #     base_path / "ascent" / TRAIN_CSV_NAME, val=True, metrics=metrics,
+        # )
+        # save_field_in_csv(base_path / "ascent" / TRAIN_CSV_NAME, training)
+
+        # Update weights
+        print("DESCENT")
+        net.switch_to_loss_training(False)
+        criterion.use_partial()
+
+        training = train_with_partial(
+            train_loader,
+            net,
+            criterion,
+            optimizer,
+            val_loader,
+            N_EPOCH_2_DESC,
+            metrics,
+            early_stop_patience=early_stop_patience,
+            save_every=save_every,
+            save_path="init",
+        )
+        os.makedirs(base_path / "descent", exist_ok=True)
+        init_csv(
+            base_path / "descent" / TRAIN_CSV_NAME, val=True, metrics=metrics,
+        )
+        save_field_in_csv(base_path / "descent" / TRAIN_CSV_NAME, training)
+        # TODO: define JC
     torch.save(net.state_dict(), RESULTS_FOLDER / TRAINING_NAME / MODEL_NAME)
     return [RESULTS_FOLDER / TRAINING_NAME / "init" / TRAIN_CSV_NAME]
 
 
-# TODO: Add comment, save fig of loss + metrics
 if __name__ == "__main__":
     # DATALOADERS
     exec(f"full_train_set = dataloader.{DATASET_TYPE}('Full', split_type='train')")
@@ -387,7 +456,7 @@ if __name__ == "__main__":
         ]"
     )
     train_loader = dataloader.ZhouLoader(
-        full_train_set, partial_train_set, batch_mul=1
+        full_train_set, partial_train_set, batch_mul=2
     )  # TODO: compute batch_mul based on batch size
 
     exec(f"val_set = dataloader.{DATASET_TYPE}('Full', split_type='val')")
@@ -449,4 +518,6 @@ if __name__ == "__main__":
     )
     with open(RESULTS_FOLDER / TRAINING_NAME / TEST_CSV_NAME, "a") as fout:
         writer = csv.writer(fout)
-        writer.writerow(format_fields([N_EPOCH, *test_results]))
+        writer.writerow(
+            format_fields([N_EPOCH_1 + N_EPOCH_2_ASC + N_EPOCH_2_DESC, *test_results])
+        )

@@ -29,7 +29,9 @@ LOSS = losses.ZhouLoss
 OPTIM = partial(optim.Adam)
 METRICS = {"Dice": losses.dice}
 
-N_EPOCH = 2
+N_EPOCH_1 = 20  # N_epoch for the first stage
+N_EPOCH_2_ASC = 10
+N_EPOCH_2_DESC = 10
 BATCH_SIZE = 16
 EARLY_STOP = 20
 SAVE_INTERVAL = 5

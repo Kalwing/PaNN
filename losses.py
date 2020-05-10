@@ -1,3 +1,4 @@
+from functools import partial
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -33,29 +34,45 @@ def l2_loss(loss, model):
 
 class ZhouLoss:
     def __init__(self, model):
+        self.lamb0 = 1
         self.lamb1 = 0
         self.lamb2 = 0
         self.model = model
 
-    def __call__(self, output_l, label_l):
+    def __call__(self, output_l, label_l, outputs_p=None, labels_p=None, Yp=None):
         num_classes = output_l.shape[1]
         pred_l = F.log_softmax(output_l, dim=1)
-        label_l = one_hot_encode(label_l, n_classes=pred_l.shape[1], type=pred_l.type())
+        one_hot_func = partial(
+            one_hot_encode, n_classes=pred_l.shape[1], type=pred_l.type()
+        )
+        label_l = one_hot_func(label_l)
 
-        if self.lamb1 == 0 and self.lamb2 == 0:  # Avoid useless calculation
-            return self.CE(pred_l, label_l)
+        if outputs_p is None or (
+            self.lamb1 == 0 and self.lamb2 == 0
+        ):  # Avoid useless calculation
+            return self.lamb0 * self.CE(pred_l, label_l)
+        else:
+            preds_p = [F.log_softmax(output_p, dim=1) for output_p in outputs_p]
+            labels_p = [one_hot_func(label_p) for label_p in labels_p]
+            Yp = [one_hot_func(yp) for yp in Yp]
         return (
-            self.CE(pred_l, label_l)
-            + self.lamb1 * self.Jp(pred_l, label_l)
+            self.lamb0 * self.CE(pred_l, label_l)
+            + self.lamb1 * self.Jp(preds_p, labels_p, Yp)
             + self.lamb2 * self.Jc(pred_l, label_l)
         )
 
     def use_partial(self):
         """
-        Switch to the 'second stage' of learning, using partial
+        Switch to the 'second stage' of learning, using partial for gradient descent
         """
-        self.lamb1 = 0.1
-        self.lamb2 = 0.2
+        self.lamb0 = 1
+        self.lamb1 = 1.0
+        self.lamb2 = 0.2  # TODO : add to config
+
+    def switch_to_ascent(self):
+        self.lamb0 = 0
+        self.lamb1 = 0
+        self.lamb2 = -self.lamb2
 
     def CE(self, output, label):
         """
@@ -73,11 +90,43 @@ class ZhouLoss:
         loss /= height * width
         return loss.mean()
 
-    def Jp(self, output, label):
-        return 0
+    def Jp(self, outputs, labels_per_class, labels_predicted):
+        """
+        Basic Cross entropy loss on the partially labeled data + crossentropy
+        on predicted label for the other classes -> Jp is our current estimation
+        of the CE for the partially supervised dataset
+
+        Args:
+            outputs (List of Tensor of size [Batch, NbClass, H, W]): Log of the
+                softmax probabilities.
+            labels_per_class (List of Tensor of size [Batch, NbClass, H, W]):
+                Tensors indicating if a given pixel correspond to the class.
+            labels_predicted (List of Tensor of size [Batch, NbClass, H, W]):
+                Tensors indicating the predicted class of a pixel.
+        """
+        height = outputs[0].shape[3]
+        width = outputs[0].shape[2]
+        loss = 0
+        for out, label, label_p in zip(outputs, labels_per_class, labels_predicted):
+            # CE on supervised
+            l = torch.einsum("bcwh,bcwh->b", out, label)
+
+            # CE on unsupervised, we extract the unsupervised layer from the predictions
+            class_indicator = torch.sum(label, dim=(2, 3))
+            # Background is a lack of information for partially supervised dataset
+            class_indicator[:, 0] = 0
+            norm = torch.max(class_indicator, dim=1, keepdim=True).values
+            class_indicator = 1 - class_indicator / norm
+            class_indicator = class_indicator.view(*label.shape[:2], 1, 1)
+            label_p = label_p * class_indicator.expand_as(label_p)
+
+            l += torch.einsum("bcwh,bcwh->b", out, label_p)
+            l /= height * width
+            loss += l
+        return -loss.mean()
 
     def Jc(self, output, label):
-        return 0
+        return self.model.mu.T @ self.model.mu * 1e-10
 
 
 def dice(logits, true, eps=1e-10):
