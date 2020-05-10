@@ -5,8 +5,8 @@ from functools import partial
 
 
 def loss_param_init(func):
-    def wrap(self, *args):
-        func(self, *args)
+    def wrap(self, *args, **kwargs):
+        func(self, *args, **kwargs)
         for param in self.loss_parameters:
             param.requires_grad = False
 
@@ -14,11 +14,7 @@ def loss_param_init(func):
             p
             for p in self.parameters()
             if not any(
-                [
-                    (p == p2).all()
-                    for p2 in self.loss_parameters
-                    if p.shape == p2.shape
-                ]
+                [(p == p2).all() for p2 in self.loss_parameters if p.shape == p2.shape]
             )
         ]
 
@@ -155,9 +151,9 @@ class SmallUNetZhou(SmallUNet):
     def __init__(self, n_channels, n_classes):
         super(SmallUNetZhou, self).__init__(n_channels, n_classes)
 
-        self.v = torch.nn.Parameter(torch.tensor([1.0]))
-        self.mu = torch.nn.Parameter(torch.tensor([5.0]))
-        self.loss_parameters = [self.v, self.mu]
+        self.nu = torch.nn.Parameter(torch.zeros((n_classes)))
+        self.mu = torch.nn.Parameter(torch.zeros((n_classes)))
+        self.loss_parameters = [self.nu, self.mu]
 
     def switch_to_loss_training(self, boolean):
         for p in self.loss_parameters:

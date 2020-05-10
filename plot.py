@@ -16,9 +16,7 @@ def plot_results(csvs, save_path=None):
         fig, ax = plt.subplots(1, n - 1, figsize=(15, 5))
         for i in range(1, n):
             ax[i - 1].plot(df.iloc[:, 0], df.iloc[:, i])
-            ax[i - 1].set_title(
-                f"{df.columns.values[i]} per {df.columns.values[0]}"
-            )
+            ax[i - 1].set_title(f"{df.columns.values[i]} per {df.columns.values[0]}")
         if save_path is None:
             plt.show()
         else:
@@ -26,7 +24,7 @@ def plot_results(csvs, save_path=None):
         purge_plt()
 
 
-def plot_pred(dataset, model, n=2, device=None, save_path=None):
+def plot_pred(dataset, model, n=2, device=None, save_path=None, prefix=""):
     inputs, labels = dataset[:n]
 
     fig, ax = plt.subplots(n, 3)
@@ -51,7 +49,7 @@ def plot_pred(dataset, model, n=2, device=None, save_path=None):
     if save_path is None:
         plt.show()
     else:
-        plt.savefig(Path(save_path) / f"{save_path.stem}_prediction.png")
+        plt.savefig(Path(save_path) / f"{prefix}{save_path.stem}_prediction.png")
     purge_plt()
 
 
@@ -72,3 +70,21 @@ def purge_plt():
     plt.clf()
     plt.cla()
     plt.close()
+
+
+def show_data(full_ds, partial_ds):
+    fig, ax = plt.subplots(len(partial_ds) + 1, 2)
+
+    ax[0, 0].imshow(torch_to_img(full_ds[0][0]))
+    ax[0, 1].imshow(full_ds[0][1])
+    ax[0, 0].set_ylabel("Fully supervised\n dataset", rotation=0, labelpad=35)
+    ax[0, 0].set_title("Input")
+    ax[0, 1].set_title("Ground Truth")
+    for i, p in enumerate(partial_ds):
+        ax[i + 1, 0].imshow(torch_to_img(p[0][0]))
+        ax[i + 1, 1].imshow(p[0][1])
+        ax[i + 1, 0].set_ylabel(
+            f"Partially supervised\n dataset {p.name}", rotation=0, labelpad=35
+        )
+
+    plt.show()

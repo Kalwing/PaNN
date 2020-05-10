@@ -17,6 +17,7 @@ from tqdm import tqdm
 import dataloader
 from config import (
     DATA_NAME,
+    PARTIAL_IDS,
     LOSS,
     MODEL_NAME,
     N_EPOCH,
@@ -34,8 +35,7 @@ from config import (
     SEED,
 )
 from dataloader import get_dataloader
-from plot import plot_results, plot_pred
-
+from plot import plot_results, plot_pred, show_data
 
 np.random.seed(SEED)
 torch.manual_seed(SEED)
@@ -113,7 +113,7 @@ class stat_holder:
             try:
                 self.metrics_summed
             except AttributeError:
-                self.metrics_summed = {name: value for name, value in metrics}
+                self.metrics_summed = {name: 0.0 for name, value in metrics}
             for name, value in metrics:
                 self.metrics_summed[name] += value
         # print statistics every LOSS_UPDATE_FREQ mini batches
@@ -121,8 +121,7 @@ class stat_holder:
             stats = {"loss": f"{self.value/self.LOSS_UPDATE_FREQ:.5f}"}
             if metrics:
                 stats["metrics"] = [
-                    f"{name}:"
-                    + f"{self.metrics_summed[name]/self.LOSS_UPDATE_FREQ:.5f}"
+                    f"{name}:" + f"{self.metrics_summed[name]/self.LOSS_UPDATE_FREQ:.5f}"
                     for name in self.metrics_summed.keys()
                 ]
                 self.metrics_summed = {name: 0.0 for name, value in metrics}
@@ -132,7 +131,7 @@ class stat_holder:
         self.iter += 1
 
 
-def train(
+def train_init(
     train_loader,
     net,
     criterion,
@@ -147,17 +146,14 @@ def train(
     i_without_improv = 0
     last_best_train_loss = float("inf")
     train_loss = float("inf")
-    while (
-        epoch < N_EPOCH and i_without_improv < early_stop_patience
-    ):  # loop over the dataset multiple times
+    while epoch < N_EPOCH and i_without_improv < early_stop_patience:
         train_progress = tqdm(train_loader, ncols=BAR_WIDTH)
         train_progress.set_description(f"Train {epoch}/{N_EPOCH}")
-        statistics_output = stat_holder(
-            train_progress, len_set=len(train_loader)
-        )
+        statistics_output = stat_holder(train_progress, len_set=len(train_loader))
 
         losses = []
-        for i, data in enumerate(train_progress):  # Loop over the dataset
+        for i, full_partial_data in enumerate(train_progress):  # Loop over the dataset
+            data, _ = full_partial_data
             # get the inputs; data is a list of [inputs, labels]
             inputs, labels = data[0].to(device), data[1].to(device)
 
@@ -190,16 +186,81 @@ def train(
         ):
             torch.save(
                 net.state_dict(),
-                RESULTS_FOLDER
-                / TRAINING_NAME
-                / save_path
-                / f"{epoch}_{MODEL_NAME}",
+                RESULTS_FOLDER / TRAINING_NAME / save_path / f"{epoch}_{MODEL_NAME}",
             )
-
         if val_loader is not None:
-            val_loss, val_metrics = run_without_train(
-                val_loader, net, criterion, metrics
+            val_loss, val_metrics = run_without_train(val_loader, net, criterion, metrics)
+            r = (epoch, train_loss, val_loss, val_metrics)
+        else:
+            r = (epoch, train_loss)
+        if i_without_improv < early_stop_patience:
+            yield r
+        else:
+            return r
+
+        epoch += 1
+
+
+def train(
+    train_loader,
+    net,
+    criterion,
+    optimizer,
+    val_loader=None,
+    metrics=None,
+    early_stop_patience=None,
+    save_every=None,
+    save_path="",
+):
+    epoch = 0
+    i_without_improv = 0
+    last_best_train_loss = float("inf")
+    train_loss = float("inf")
+    while epoch < N_EPOCH and i_without_improv < early_stop_patience:
+        train_progress = tqdm(train_loader, ncols=BAR_WIDTH)
+        train_progress.set_description(f"Train {epoch}/{N_EPOCH}")
+        statistics_output = stat_holder(train_progress, len_set=len(train_loader))
+
+        losses = []
+        for i, full_data, partials_data in enumerate(
+            train_progress
+        ):  # Loop over the dataset
+            # get the inputs; data is a list of [inputs, labels]
+            inputs, labels = full_data[0].to(device), full_data[1].to(device)
+
+            # zero the parameter gradients
+            optimizer.zero_grad()
+
+            # forward + backward + optimize
+            outputs = net(inputs)
+            loss = criterion(outputs, labels)
+            losses.append(loss)
+            loss.backward()
+            optimizer.step()
+
+            # print statistics
+            statistics_output.update(loss)
+        train_loss = sum(losses) / i
+
+        # Early Stopping
+        if early_stop_patience is not None:
+            if not train_loss < last_best_train_loss:
+                i_without_improv += 1
+            else:
+                last_best_train_loss = train_loss
+                i_without_improv = 0
+
+        if (
+            save_every is not None
+            and epoch % save_every == 0
+            and i_without_improv < save_every
+        ):
+            torch.save(
+                net.state_dict(),
+                RESULTS_FOLDER / TRAINING_NAME / save_path / f"{epoch}_{MODEL_NAME}",
             )
+        if val_loader is not None:
+            val_loss, val_metrics = run_without_train(val_loader, net, criterion, metrics)
             r = (epoch, train_loss, val_loss, val_metrics)
         else:
             r = (epoch, train_loss)
@@ -224,12 +285,11 @@ def run_without_train(loader, net, criterion, metrics, val=True):
         for i, data in enumerate(progress):
             inputs, labels = data[0].to(device), data[1].to(device)
             outputs = net(inputs)
-            # _, predicted = torch.max(outputs.data, 1) #TODO: To remove when dealing with image
             loss = criterion(outputs, labels)
             losses.append(loss)
 
             metrics_val = []
-            for name in metrics_names:  # TODO ADAPT TO SEG
+            for name in metrics_names:
                 v = metrics[name](outputs.type(torch.float), labels)
                 metrics_values[name].append(v)
                 metrics_val.append(v)
@@ -237,8 +297,7 @@ def run_without_train(loader, net, criterion, metrics, val=True):
             statistics_output.update(loss, zip(metrics_names, metrics_val))
         mean_loss = sum(losses) / len(losses)
         mean_metrics = {
-            name: sum(metrics_values[name]) / len(losses)
-            for name in metrics_names
+            name: sum(metrics_values[name]) / len(losses) for name in metrics_names
         }
     return mean_loss, mean_metrics
 
@@ -252,7 +311,7 @@ def save_field_in_csv(path, training_data):
 
 
 def run(
-    train_init_loader,
+    train_loader,
     net,
     criterion,
     optimizer,
@@ -267,8 +326,8 @@ def run(
 
     if not glob(str(RESULTS_FOLDER / TRAINING_NAME / "init" / "*.pth")):
         # train the initial segmentation model
-        training = train(
-            train_init_loader,
+        training = train_init(
+            train_loader,
             net,
             criterion,
             optimizer,
@@ -292,8 +351,7 @@ def run(
             RESULTS_FOLDER / TRAINING_NAME / "init" / TRAIN_CSV_NAME, training
         )  # The training is done here
         torch.save(
-            net.state_dict(),
-            RESULTS_FOLDER / TRAINING_NAME / "init" / MODEL_NAME,
+            net.state_dict(), RESULTS_FOLDER / TRAINING_NAME / "init" / MODEL_NAME,
         )
         print("Finished init training")  # TODO: log final result of training
 
@@ -305,12 +363,16 @@ def run(
         net.load_state_dict(torch.load(initfile))
 
     # Compute the prior distribution
-    # q = train_set.dist
-    # v = -1 / q
-    # mu = -1 / (1 - q)
+    print("-> Computing the initial parameters associated to the primal variables:")
+    q = dataloader.compute_distribution(train_loader.full_loader)
+    # TODO: output q
+    net.nu.copy_(-1 / q)
+    net.mu.copy_(-1 / (1 - q))
 
     # Update segmentation model
-
+    # TODO: Train with Jp and Jc = 0
+    # TODO; Define Jp
+    # TODO: define JC
     torch.save(net.state_dict(), RESULTS_FOLDER / TRAINING_NAME / MODEL_NAME)
     return [RESULTS_FOLDER / TRAINING_NAME / "init" / TRAIN_CSV_NAME]
 
@@ -318,15 +380,22 @@ def run(
 # TODO: Add comment, save fig of loss + metrics
 if __name__ == "__main__":
     # DATALOADERS
+    exec(f"full_train_set = dataloader.{DATASET_TYPE}('Full', split_type='train')")
     exec(
-        f"train_set = dataloader.{DATASET_TYPE}(DATA_NAME, split_type='train')"
+        f"partial_train_set = [ \
+            dataloader.{DATASET_TYPE}(str(partial), split_type='train') for partial in PARTIAL_IDS \
+        ]"
     )
-    train_loader = get_dataloader(train_set)
-    exec(f"val_set = dataloader.{DATASET_TYPE}(DATA_NAME, split_type='val')")
+    train_loader = dataloader.ZhouLoader(
+        full_train_set, partial_train_set, batch_mul=1
+    )  # TODO: compute batch_mul based on batch size
+
+    exec(f"val_set = dataloader.{DATASET_TYPE}('Full', split_type='val')")
     val_loader = get_dataloader(val_set)
-    exec(f"test_set = dataloader.{DATASET_TYPE}(DATA_NAME, split_type='test')")
+    exec(f"test_set = dataloader.{DATASET_TYPE}('Full', split_type='test')")
     test_loader = get_dataloader(test_set)
 
+    # show_data(full_train_set, partial_train_set)
     # NEURAL NET SETUP
     net = NET(**NET_PARAM)
     net.to(device)
@@ -338,7 +407,7 @@ if __name__ == "__main__":
     except FileExistsError:
         pass
     with open(RESULTS_FOLDER / TRAINING_NAME / "summary.md", "w") as fout:
-        shape = train_set[0][0].shape
+        shape = full_train_set[0][0].shape
         shape = (1, 128, 128)
         fout.write(f"Trained the {datetime.now()}\n\n")
         fout.write(f"\n*Data*: `{DATA_NAME}`  \n")
@@ -346,9 +415,7 @@ if __name__ == "__main__":
         fout.write(f"\n*Loss*: `{criterion}`  ")
         fout.write(f"\n*Optimizer*: \n```python\n{optimizer}\n```  ")
         s = sys.stdout
-        sys.stdout = (
-            fout  #  A bit hacky, but allow summary to be printed in fout
-        )
+        sys.stdout = fout  #  A bit hacky, but allow summary to be printed in fout
         fout.write(f"\n\n*Summary*: (for input of size {shape})\n```js\n")
         summary(net, shape)
         sys.stdout = s
@@ -369,11 +436,7 @@ if __name__ == "__main__":
     plot_results(csv_files, save_path=RESULTS_FOLDER / TRAINING_NAME)
 
     plot_pred(
-        test_set,
-        net,
-        n=3,
-        device=device,
-        save_path=RESULTS_FOLDER / TRAINING_NAME,
+        test_set, net, n=3, device=device, save_path=RESULTS_FOLDER / TRAINING_NAME,
     )
 
     #  TEST EVALUATION
@@ -382,9 +445,7 @@ if __name__ == "__main__":
     )
 
     init_csv(
-        RESULTS_FOLDER / TRAINING_NAME / TEST_CSV_NAME,
-        test=True,
-        metrics=metrics,
+        RESULTS_FOLDER / TRAINING_NAME / TEST_CSV_NAME, test=True, metrics=metrics,
     )
     with open(RESULTS_FOLDER / TRAINING_NAME / TEST_CSV_NAME, "a") as fout:
         writer = csv.writer(fout)

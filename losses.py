@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import types
+import matplotlib.pyplot as plt
+from utils import one_hot_encode
 
 
 def non_parametric_loss(loss, model):
@@ -33,13 +35,49 @@ class ZhouLoss:
     def __init__(self, model):
         self.lamb1 = 0
         self.lamb2 = 0
+        self.model = model
 
-    def __call__(self, output, label):
+    def __call__(self, output_l, label_l):
+        num_classes = output_l.shape[1]
+        pred_l = F.log_softmax(output_l, dim=1)
+        label_l = one_hot_encode(label_l, n_classes=pred_l.shape[1], type=pred_l.type())
+
+        if self.lamb1 == 0 and self.lamb2 == 0:  # Avoid useless calculation
+            return self.CE(pred_l, label_l)
         return (
-            self.JL(output)
-            + self.lamb1 * self.Jp(output, self.Yp)
-            + self.lamb2 * self.Jc(output)
+            self.CE(pred_l, label_l)
+            + self.lamb1 * self.Jp(pred_l, label_l)
+            + self.lamb2 * self.Jc(pred_l, label_l)
         )
+
+    def use_partial(self):
+        """
+        Switch to the 'second stage' of learning, using partial
+        """
+        self.lamb1 = 0.1
+        self.lamb2 = 0.2
+
+    def CE(self, output, label):
+        """
+        Basic Cross entropy loss on the fully labeled data
+
+        Args:
+            output (Tensor of size [Batch, NbClass, H, W]): Log of the softmax
+                probability
+            label (Tensor of size [Batch, NbClass, H, W]): Tensor indicating the
+                class of a given pixel
+        """
+        height = output.shape[3]
+        width = output.shape[2]
+        loss = -torch.einsum("bcwh,bcwh->b", output, label)
+        loss /= height * width
+        return loss.mean()
+
+    def Jp(self, output, label):
+        return 0
+
+    def Jc(self, output, label):
+        return 0
 
 
 def dice(logits, true, eps=1e-10):
@@ -54,6 +92,7 @@ def dice(logits, true, eps=1e-10):
     Returns:
         dice: the Sørensen–Dice coeff.
     """
+    assert true.shape[0] == logits.shape[0] and true.shape[1:] == logits.shape[2:]
     true = true.unsqueeze(1)
     num_classes = logits.shape[1]
     if num_classes == 1:
@@ -74,7 +113,8 @@ def dice(logits, true, eps=1e-10):
     intersection = torch.sum(probas * true_1_hot, dims)
     cardinality = torch.sum(probas + true_1_hot, dims)
     dice = (2.0 * intersection / (cardinality + eps)).mean()
-    return dice
+    assert dice <= 1
+    return dice  # TODO: Shouldn't be more than 1
 
 
 def dice_loss(output, label, eps=1e-10):

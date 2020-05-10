@@ -1,7 +1,9 @@
+from functools import partial
 import torch
 import torchvision
 import torchvision.transforms as transforms
 import os
+import copy
 import matplotlib.pyplot as plt
 import numpy as np
 from skimage import io
@@ -9,12 +11,14 @@ from sklearn.utils import shuffle
 from torch.utils.data import Dataset, DataLoader
 from config import (
     DATA_FOLDER,
+    DATA_NAME,
     SPLIT_FOLDERS,
     GT_FOLDER,
     IMG_FOLDER,
     BATCH_SIZE,
     SEED,
 )
+from utils import one_hot_encode
 
 
 class ImgClassifDataset(Dataset):
@@ -31,9 +35,7 @@ class ImgClassifDataset(Dataset):
         )
         self.gts.sort(key=lambda p: p.stem)
         self.imgs = list(
-            (
-                DATA_FOLDER / name / SPLIT_FOLDERS[split_id] / IMG_FOLDER
-            ).iterdir()
+            (DATA_FOLDER / name / SPLIT_FOLDERS[split_id] / IMG_FOLDER).iterdir()
         )
         self.imgs.sort(key=lambda p: p.stem)
 
@@ -68,12 +70,7 @@ class ImgClassifDataset(Dataset):
         form = "{:." + str(n_digits) + "}"
         print(
             f"dist:"
-            + str(
-                [
-                    (label, form.format(f))
-                    for label, f in zip(self.labels, self.dist)
-                ]
-            )
+            + str([(label, form.format(f)) for label, f in zip(self.labels, self.dist)])
         )
 
 
@@ -85,14 +82,17 @@ class ImgPredDataset(Dataset):
                 Defaults to None.
         """
         self.transform = transform
+        self.name = name
         split_id = ["train", "val", "test"].index(split_type)
         self.gts = list(
-            (DATA_FOLDER / name / SPLIT_FOLDERS[split_id] / GT_FOLDER).iterdir()
+            (
+                DATA_FOLDER / DATA_NAME / name / SPLIT_FOLDERS[split_id] / GT_FOLDER
+            ).iterdir()
         )
         self.gts.sort(key=lambda p: p.stem)
         self.imgs = list(
             (
-                DATA_FOLDER / name / SPLIT_FOLDERS[split_id] / IMG_FOLDER
+                DATA_FOLDER / DATA_NAME / name / SPLIT_FOLDERS[split_id] / IMG_FOLDER
             ).iterdir()
         )
         self.imgs.sort(key=lambda p: p.stem)
@@ -117,23 +117,22 @@ class ImgPredDataset(Dataset):
         imgs = []
         gts = []
         for id_ in idx:
-            img = io.imread(self.imgs[id_]).astype("float64")
+            img = io.imread(self.imgs[id_], as_gray=True).astype("float64")
             if len(img.shape) == 2:
                 img = np.expand_dims(img, axis=-1)
             img = img.transpose((2, 0, 1)) / 255.0
 
-            gt = io.imread(self.gts[id_]).astype("float64")
+            gt = io.imread(str(self.gts[id_]))
             # if len(gt.shape) == 2:
             #     gt = np.expand_dims(gt, axis=-1)
             # gt = gt.transpose((2, 0, 1)) / 255.0
-
-            assert np.max(gt) >= 2 and np.max(img) <= 1, (
+            assert np.max(gt) >= 1 and np.max(img) <= 1, (
                 np.max(gt),
                 np.max(img),
             )
-            assert len(np.unique(gt)) > 2, "gt is empty"
-
-            # assert gt.shape == img.shape, self.gts[id_]
+            assert len(np.unique(gt)) >= 2, "gt is empty"
+            assert img.shape[0] == 1, img.shape
+            assert gt.shape[:2] == img.shape[1:], f"GT:{gt.shape}, IMG:{img.shape}"
 
             if self.transform:
                 img = self.transform(img)
@@ -146,5 +145,85 @@ class ImgPredDataset(Dataset):
             return torch.stack(imgs), torch.stack(gts)
 
 
+class ZhouLoader:
+    def __init__(self, full_ds, partial_ds, batch_mul, full_ratio=3, *args):
+        """
+        Create a dataloader returning for each batch:
+            ({len(partial_ds)} * (1 + {full_ratio}) * {batch_mul}) images
+        for each Batch
+
+        Args:
+            full_ds (Dataset): A fully supervised dataset
+            partial_ds (List(Dataset)): A list containing the partially
+                supervised datasets
+            batch_mul (int): the number of pair taken from a partially
+                supervised dataset
+            full_ratio (int, optional): The number of fully supervised
+                input/label pairs in each batch for each partially supervised
+                pair. Defaults to 3.
+        """
+        self.full_loader = DataLoader(full_ds, batch_size=batch_mul * full_ratio)
+        self.partial_loaders = [DataLoader(ds, batch_size=batch_mul) for ds in partial_ds]
+
+    def __iter__(self):
+        self.iter = 0
+        self.partial_loaders_iter = [iter(p) for p in self.partial_loaders]
+        self.full_loader_iter = iter(self.full_loader)
+        self.ds_finished = [False for i in range(1 + len(self.partial_loaders))]
+        return self
+
+    def __next__(self):
+        """
+        Return a tuple of type (next element in Fully supervised dataset,
+            (next elements in the partially supervised ones))
+        Reset each iterator until all the iterator have been exhausted once
+        """
+        try:
+            full_next = next(self.full_loader_iter)
+        except StopIteration:
+            self.ds_finished[0] = True
+            self.full_loader_iter = iter(self.full_loader)
+            full_next = next(self.full_loader_iter)
+
+        partials_next = []
+        for i, partial in enumerate(self.partial_loaders):
+            try:
+                partials_next.append(next(self.partial_loaders_iter[i]))
+            except StopIteration:
+                self.ds_finished[i + 1] = True
+                self.partial_loaders_iter[i] = iter(self.partial_loaders[i])
+                partials_next.append(next(self.partial_loaders_iter[i]))
+
+        if sum(self.ds_finished) == len(self.ds_finished):  #  All dataset are finished
+            raise StopIteration
+        return (full_next, tuple(partials_next))
+
+    def __len__(self):
+        """
+        The len of this loader is equal to the length of the longest dataset given
+        """
+        return max([len(dl) for dl in self.partial_loaders] + [len(self.full_loader)])
+
+
+def estimate_batch_mul_from_bs(batch_size, nb_partial_ds, full_ratio=3):
+    batch_mul = BATCH_SIZE // (nb_partial_ds * (1 + full_ratio))
+    print(f"The real Batch Size will be {batch_mul}")
+    return batch_mul
+
+
 def get_dataloader(dataset):
     return DataLoader(dataset, batch_size=BATCH_SIZE)
+
+
+def compute_distribution(dataloader):
+    ref = next(iter(dataloader))[1]
+    one_hot_func = partial(one_hot_encode, n_classes=torch.max(ref) + 1, type=ref.type())
+    ref = one_hot_func(ref)
+
+    gt_sum = torch.zeros(ref.shape)
+    n_pixel = ref.shape[-1] * ref.shape[-2]
+    for _, gt in dataloader:
+        gt_sum = gt_sum + one_hot_func(gt)
+    q = torch.einsum("blhw->l", gt_sum) / n_pixel
+
+    return q / len(dataloader.dataset)
