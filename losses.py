@@ -6,6 +6,8 @@ import numpy as np
 import types
 import matplotlib.pyplot as plt
 from utils import one_hot_encode
+from plot import torch_to_img
+from utils import compute_distribution_tensors
 
 
 def non_parametric_loss(loss, model):
@@ -39,8 +41,9 @@ class ZhouLoss:
         self.lamb2 = 0
         self.model = model
 
-    def __call__(self, output_l, label_l, outputs_p=None, labels_p=None, Yp=None):
-        num_classes = output_l.shape[1]
+    def __call__(
+        self, output_l, label_l, outputs_p=None, labels_p=None, Yp=None, ref_distrib=None
+    ):
         pred_l = F.log_softmax(output_l, dim=1)
         one_hot_func = partial(
             one_hot_encode, n_classes=pred_l.shape[1], type=pred_l.type()
@@ -52,13 +55,16 @@ class ZhouLoss:
         ):  # Avoid useless calculation
             return self.lamb0 * self.CE(pred_l, label_l)
         else:
-            preds_p = [F.log_softmax(output_p, dim=1) for output_p in outputs_p]
+            preds_p = [F.softmax(output_p, dim=1) for output_p in outputs_p]
+            pred_distrib = compute_distribution_tensors(preds_p)
+            preds_p = [torch.log(p + 1e-10) for p in preds_p]
             labels_p = [one_hot_func(label_p) for label_p in labels_p]
+
             Yp = [one_hot_func(yp) for yp in Yp]
         return (
             self.lamb0 * self.CE(pred_l, label_l)
             + self.lamb1 * self.Jp(preds_p, labels_p, Yp)
-            + self.lamb2 * self.Jc(pred_l, label_l)
+            + self.lamb2 * self.Jc(ref_distrib, pred_distrib)
         )
 
     def use_partial(self):
@@ -120,17 +126,29 @@ class ZhouLoss:
             class_indicator = class_indicator.view(*label.shape[:2], 1, 1)
             label_p = label_p * class_indicator.expand_as(label_p)
 
-            l += torch.einsum("bcwh,bcwh->b", out, label_p)
+            l += torch.einsum(
+                "bcwh,bcwh->b", out, label_p
+            )  # TODO this can be simplified in a single CE
             l /= height * width
             loss += l
         return -loss.mean()
 
-    def Jc(self, output, label):
-        return self.model.mu.T @ self.model.mu * 1e-10
+    def Jc(self, q, p):
+        # TODO this
+        f = (q * self.model.nu - (1 - q) * self.model.mu) * p + q * torch.log(
+            -self.model.nu
+        )
+        b = (1 - q) * (self.model.mu + torch.log(-self.model.mu))
+        kl = torch.sum(f) + torch.sum(b)
+        assert kl >= -100  # TODO Inspect this, it should not be < 0
+        return kl
+        # return self.model.mu.T @ self.model.mu * 1e-10
 
 
 def dice(logits, true, eps=1e-10):
     """Computes the Sørensen–Dice.
+
+
 
     Source: https://github.com/kevinzakka/pytorch-goodies/blob/master/losses.py
     Args:

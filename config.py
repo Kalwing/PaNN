@@ -4,6 +4,7 @@ import torch.optim as optim
 from functools import partial
 from pathlib import Path
 import losses
+from utils import estimate_batch_mul_from_bs
 
 SEED = 1
 
@@ -30,10 +31,11 @@ OPTIM = partial(optim.Adam)
 METRICS = {"Dice": losses.dice}
 
 N_EPOCH_1 = 20  # N_epoch for the first stage
-N_EPOCH_2_ASC = 10
-N_EPOCH_2_DESC = 10
-BATCH_SIZE = 16
+N_EPOCH_2_ASC = 20
+N_EPOCH_2_DESC = 20
+BATCH_SIZE = 32
+BATCH_MUL = estimate_batch_mul_from_bs(BATCH_SIZE, len(PARTIAL_IDS))  # TODO calculate it
 EARLY_STOP = 20
 SAVE_INTERVAL = 5
 
-SECOND_STAGE_ITER = 2
+SECOND_STAGE_ITER = 10

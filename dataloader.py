@@ -6,6 +6,8 @@ import os
 import copy
 import matplotlib.pyplot as plt
 import numpy as np
+import torch.nn.functional as F
+import warnings
 from skimage import io
 from sklearn.utils import shuffle
 from torch.utils.data import Dataset, DataLoader
@@ -19,6 +21,7 @@ from config import (
     SEED,
 )
 from utils import one_hot_encode
+from plot import torch_to_img
 
 
 class ImgClassifDataset(Dataset):
@@ -75,29 +78,29 @@ class ImgClassifDataset(Dataset):
 
 
 class ImgPredDataset(Dataset):
-    def __init__(self, name, transform=None, split_type="train"):
+    def __init__(
+        self, name, transform=None, split_type="train", base_path=None, randomize=True
+    ):
         """
         Args:
             transform (callable, optional): Transform to be applied on a sample.
                 Defaults to None.
         """
+        if base_path is None:
+            base_path = DATA_FOLDER / DATA_NAME
         self.transform = transform
         self.name = name
         split_id = ["train", "val", "test"].index(split_type)
         self.gts = list(
-            (
-                DATA_FOLDER / DATA_NAME / name / SPLIT_FOLDERS[split_id] / GT_FOLDER
-            ).iterdir()
+            (base_path / name / SPLIT_FOLDERS[split_id] / GT_FOLDER).iterdir()
         )
         self.gts.sort(key=lambda p: p.stem)
         self.imgs = list(
-            (
-                DATA_FOLDER / DATA_NAME / name / SPLIT_FOLDERS[split_id] / IMG_FOLDER
-            ).iterdir()
+            (base_path / name / SPLIT_FOLDERS[split_id] / IMG_FOLDER).iterdir()
         )
         self.imgs.sort(key=lambda p: p.stem)
-
-        self.gts, self.imgs = shuffle(self.gts, self.imgs, random_state=SEED)
+        if randomize:
+            self.gts, self.imgs = shuffle(self.gts, self.imgs, random_state=SEED)
         assert (
             self.imgs[0].stem == self.gts[0].stem
         ), f"Path misordered: {self.imgs[:3]}!={self.gts[:3]}"
@@ -117,6 +120,7 @@ class ImgPredDataset(Dataset):
         imgs = []
         gts = []
         for id_ in idx:
+            # print(self.imgs[id_])
             img = io.imread(self.imgs[id_], as_gray=True).astype("float64")
             if len(img.shape) == 2:
                 img = np.expand_dims(img, axis=-1)
@@ -215,16 +219,28 @@ def get_dataloader(dataset):
     return DataLoader(dataset, batch_size=BATCH_SIZE)
 
 
-def compute_distribution(dataloader):
-    ref = next(iter(dataloader))[1]
-    one_hot_func = partial(one_hot_encode, n_classes=torch.max(ref) + 1, type=ref.type())
-    ref = one_hot_func(ref)
+def save_preds(train_loader, model, base_path, device=None):
+    for i, dataset in enumerate(train_loader.partial_loaders):
+        path = base_path / str(i + 1) / "train"
+        os.makedirs(path, exist_ok=True)
+        n = 0
+        os.makedirs(path / "gt", exist_ok=True)
+        os.makedirs(path / "img", exist_ok=True)
+        for imgs, gts in dataset:
+            for img, gt in zip(imgs, gts):
+                to_predict = img.unsqueeze(0)
+                if device is not None:
+                    to_predict = to_predict.to(device)
+                output = model(to_predict)[0].cpu().detach()
+                assert torch.max(output) > 0
+                pred = F.softmax(output, dim=0)
+                output = torch_to_img(pred.detach().numpy(), normalize=False)
+                img = torch_to_img(img.detach()).numpy().astype(np.uint16)
 
-    gt_sum = torch.zeros(ref.shape[1:])
-    n_pixel = ref.shape[-1] * ref.shape[-2]
-    for _, gt in dataloader:
-        one_hot = torch.sum(one_hot_func(gt), dim=0)
-        gt_sum = gt_sum + one_hot / one_hot.shape[0]
-    q = torch.einsum("lhw->l", gt_sum) / n_pixel
+                assert 1 < np.max(img) <= 255, f"{np.max(output)} {np.max(img)}"
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    io.imsave(path / "gt" / f"{n:05d}.png", output.astype(np.uint16))
+                    io.imsave(path / "img" / f"{n:05d}.png", img)
 
-    return q / len(dataloader.dataset)
+                n += 1

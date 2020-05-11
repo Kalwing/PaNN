@@ -20,6 +20,7 @@ from config import (
     PARTIAL_IDS,
     LOSS,
     MODEL_NAME,
+    BATCH_MUL,
     N_EPOCH_1,
     N_EPOCH_2_ASC,
     N_EPOCH_2_DESC,
@@ -38,7 +39,8 @@ from config import (
     SECOND_STAGE_ITER,
 )
 from dataloader import get_dataloader
-from plot import plot_results, plot_pred, show_data
+from utils import compute_distribution_dl
+from plot import plot_results, plot_pred, show_data, torch_to_img
 
 np.random.seed(SEED)
 torch.manual_seed(SEED)
@@ -207,6 +209,7 @@ def train_init(
 
 def train_with_partial(
     train_loader,
+    predicted_partials,
     net,
     criterion,
     optimizer,
@@ -216,6 +219,7 @@ def train_with_partial(
     early_stop_patience=None,
     save_every=None,
     save_path="",
+    ref_distrib=None,
 ):  # Yeah ok it's ugly and i could refactor train with partial into train_init but TODO I guess
     epoch = 0
     i_without_improv = 0
@@ -225,21 +229,24 @@ def train_with_partial(
         train_progress = tqdm(train_loader, ncols=BAR_WIDTH)
         train_progress.set_description(f"Train {epoch}/{n_epoch}")
         statistics_output = stat_holder(train_progress, len_set=len(train_loader))
-
+        predicted_loader = iter(predicted_partials)
         losses = []
         for i, full_partial_data in enumerate(train_progress):  # Loop over the dataset
             full_data, partials_data = full_partial_data
             # get the inputs; data is a list of [inputs, labels]
             inputs_full, labels_full = full_data[0].to(device), full_data[1].to(device)
             inputs_partials, labels_partials = list(
-                zip(
-                    *[
-                        (partial_data[0].to(device), partial_data[1].to(device))
-                        for partial_data in partials_data
-                    ]
-                )
+                zip(*[(img.to(device), gt.to(device)) for img, gt in partials_data])
+            )
+            # We suppose that a datalaoder isn't re-shuffled between the moment
+            # we predicted the label and the moment we load it w/ the partial
+            # inputs
+            _, predicted_data = next(predicted_loader)
+            inputs_predicted, labels_predicted = list(
+                zip(*[(img.to(device), gt.to(device)) for img, gt in predicted_data])
             )
 
+            assert (inputs_predicted[0][0] == inputs_partials[0][0]).all()  # Same image
             # zero the parameter gradients
             optimizer.zero_grad()
 
@@ -251,7 +258,8 @@ def train_with_partial(
                 labels_full,
                 outputs_partials,
                 labels_partials,
-                labels_partials,
+                labels_predicted,
+                ref_distrib,
             )
             losses.append(loss)
             loss.backward()
@@ -370,6 +378,14 @@ def run(
         torch.save(
             net.state_dict(), RESULTS_FOLDER / TRAINING_NAME / "init" / MODEL_NAME,
         )
+
+        plot_pred(
+            train_loader.full_loader.dataset,
+            net,
+            n=3,
+            device=device,
+            save_path=RESULTS_FOLDER / TRAINING_NAME / "init",
+        )
         print("Finished init training")  # TODO: log final result of training
 
     else:
@@ -381,7 +397,7 @@ def run(
 
     # Compute the prior distribution
     print("-> Computing the initial parameters associated to the primal variables:")
-    q = dataloader.compute_distribution(train_loader.full_loader)
+    q = compute_distribution_dl(train_loader.full_loader).to(device)
     # TODO: output q
     net.nu.copy_(-1 / (q + 1e-10))
     net.mu.copy_(-1 / (1 - q + 1e-10))
@@ -394,39 +410,53 @@ def run(
 
         # Compute YP
         with torch.no_grad():
-            pass
-            # TODO: new dataloader saving image in data for each pred (=Yp in the paper)
+            pred_path = RESULTS_FOLDER / TRAINING_NAME / "Predicted"
+            dataloader.save_preds(
+                train_loader, net, pred_path, device=device,
+            )
+            predicted_partials = [
+                dataloader.ImgPredDataset(
+                    str(partial), base_path=pred_path, split_type="train", randomize=False
+                )
+                for partial in PARTIAL_IDS
+            ]
+            pred_label_loader = dataloader.ZhouLoader(
+                train_loader.full_loader.dataset, predicted_partials, batch_mul=BATCH_MUL
+            )
 
         # update mu and nu
-        # print("ASCENT")
-        # net.switch_to_loss_training(True)
-        # criterion.switch_to_ascent()
+        print(f"ASCENT {iter+1}/{SECOND_STAGE_ITER}")
+        net.switch_to_loss_training(True)
+        criterion.switch_to_ascent()
 
-        # training = train_with_partial(
-        #     train_loader,
-        #     net,
-        #     criterion,
-        #     optimizer,
-        #     val_loader,
-        #     N_EPOCH_2_ASC,
-        #     metrics,
-        #     early_stop_patience=early_stop_patience,
-        #     save_every=save_every,
-        #     save_path="init",
-        # )
-        # os.makedirs(base_path / "ascent", exist_ok=True)
-        # init_csv(
-        #     base_path / "ascent" / TRAIN_CSV_NAME, val=True, metrics=metrics,
-        # )
-        # save_field_in_csv(base_path / "ascent" / TRAIN_CSV_NAME, training)
+        training = train_with_partial(
+            train_loader,
+            pred_label_loader,
+            net,
+            criterion,
+            optimizer,
+            val_loader,
+            N_EPOCH_2_ASC,
+            metrics,
+            early_stop_patience=early_stop_patience,
+            save_every=save_every,
+            save_path="init",
+            ref_distrib=q,
+        )
+        os.makedirs(base_path / "ascent", exist_ok=True)
+        init_csv(
+            base_path / "ascent" / TRAIN_CSV_NAME, val=True, metrics=metrics,
+        )
+        save_field_in_csv(base_path / "ascent" / TRAIN_CSV_NAME, training)
 
         # Update weights
-        print("DESCENT")
+        print(f"DESCENT {iter+1}/{SECOND_STAGE_ITER}")
         net.switch_to_loss_training(False)
         criterion.use_partial()
 
         training = train_with_partial(
             train_loader,
+            pred_label_loader,
             net,
             criterion,
             optimizer,
@@ -436,13 +466,21 @@ def run(
             early_stop_patience=early_stop_patience,
             save_every=save_every,
             save_path="init",
+            ref_distrib=q,
         )
         os.makedirs(base_path / "descent", exist_ok=True)
         init_csv(
             base_path / "descent" / TRAIN_CSV_NAME, val=True, metrics=metrics,
         )
         save_field_in_csv(base_path / "descent" / TRAIN_CSV_NAME, training)
-        # TODO: define JC
+
+        plot_pred(
+            train_loader.full_loader.dataset,
+            net,
+            n=3,
+            device=device,
+            save_path=base_path,
+        )
     torch.save(net.state_dict(), RESULTS_FOLDER / TRAINING_NAME / MODEL_NAME)
     return [RESULTS_FOLDER / TRAINING_NAME / "init" / TRAIN_CSV_NAME]
 
@@ -456,7 +494,7 @@ if __name__ == "__main__":
         ]"
     )
     train_loader = dataloader.ZhouLoader(
-        full_train_set, partial_train_set, batch_mul=2
+        full_train_set, partial_train_set, batch_mul=BATCH_MUL
     )  # TODO: compute batch_mul based on batch size
 
     exec(f"val_set = dataloader.{DATASET_TYPE}('Full', split_type='val')")
@@ -469,7 +507,7 @@ if __name__ == "__main__":
     net = NET(**NET_PARAM)
     net.to(device)
     criterion = LOSS(net)
-    optimizer = OPTIM(net.parameters())
+    optimizer = OPTIM(net.parameters())  # TODO: Different optimizer for each stage
     # Outputing the parameters of the networks in the results folder
     try:
         os.makedirs(RESULTS_FOLDER / TRAINING_NAME)

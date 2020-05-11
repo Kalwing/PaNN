@@ -53,15 +53,17 @@ def plot_pred(dataset, model, n=2, device=None, save_path=None, prefix=""):
     purge_plt()
 
 
-def torch_to_img(tensor):
+def torch_to_img(tensor, normalize=True):
     if len(tensor.shape) > 2 and tensor.shape[0] > 1:
         # for c in range(tensor.shape[0]):
         #     tensor[c] = tensor[c] * c
         #     tensor[0] = torch.max(tensor[c], tensor[0])
         tensor = np.argmax(tensor, 0)
-        print("class detected", np.unique(tensor))
-        tensor = tensor / tensor.max()
-        return tensor * 255.0
+        # print("class detected", np.unique(tensor))
+        if normalize:
+            tensor = tensor / tensor.max()
+            return tensor * 255.0
+        return tensor
     else:
         return tensor.transpose(2, 0).squeeze(-1).T * 255.0
 
