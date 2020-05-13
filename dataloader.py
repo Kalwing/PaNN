@@ -130,11 +130,11 @@ class ImgPredDataset(Dataset):
             # if len(gt.shape) == 2:
             #     gt = np.expand_dims(gt, axis=-1)
             # gt = gt.transpose((2, 0, 1)) / 255.0
-            assert np.max(gt) >= 1 and np.max(img) <= 1, (
+            assert np.max(gt) < 255 and np.max(img) <= 1, (
                 np.max(gt),
                 np.max(img),
             )
-            assert len(np.unique(gt)) >= 2, "gt is empty"
+
             assert img.shape[0] == 1, img.shape
             assert gt.shape[:2] == img.shape[1:], f"GT:{gt.shape}, IMG:{img.shape}"
 
@@ -233,14 +233,14 @@ def save_preds(train_loader, model, base_path, device=None):
                     to_predict = to_predict.to(device)
                 output = model(to_predict)[0].cpu().detach()
                 assert torch.max(output) > 0
-                pred = F.softmax(output, dim=0)
-                output = torch_to_img(pred.detach().numpy(), normalize=False)
+                pred = F.softmax(output, dim=0).detach().numpy()
+                output = np.argmax(pred, axis=0)
                 img = torch_to_img(img.detach()).numpy().astype(np.uint16)
 
                 assert 1 < np.max(img) <= 255, f"{np.max(output)} {np.max(img)}"
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    io.imsave(path / "gt" / f"{n:05d}.png", output.astype(np.uint16))
+                    io.imsave(path / "gt" / f"{n:05d}.png", output.astype(np.uint8))
                     io.imsave(path / "img" / f"{n:05d}.png", img)
 
                 n += 1

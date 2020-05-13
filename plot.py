@@ -90,3 +90,15 @@ def show_data(full_ds, partial_ds):
         )
 
     plt.show()
+
+
+# def show_data(full_ds, partial_ds):
+#     fig, ax = plt.subplots(2, 4, figsize=(12, 5))
+
+#     ax[0, 0].set_ylabel("Input", rotation=0, labelpad=35)
+#     ax[1, 0].set_ylabel("Ground Truth", rotation=0, labelpad=35)
+#     for i, p in enumerate(range(4)):
+#         ax[0, i].imshow(torch_to_img(full_ds[i][0]))
+#         ax[1, i].imshow(full_ds[i][1])
+
+#     plt.show()

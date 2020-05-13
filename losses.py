@@ -73,7 +73,7 @@ class ZhouLoss:
         """
         self.lamb0 = 1
         self.lamb1 = 1.0
-        self.lamb2 = 0.2  # TODO : add to config
+        self.lamb2 = 0.1  # TODO : add to config
 
     def switch_to_ascent(self):
         self.lamb0 = 0
@@ -122,9 +122,10 @@ class ZhouLoss:
             # Background is a lack of information for partially supervised dataset
             class_indicator[:, 0] = 0
             norm = torch.max(class_indicator, dim=1, keepdim=True).values
-            class_indicator = 1 - class_indicator / norm
+            class_indicator = class_indicator / norm
             class_indicator = class_indicator.view(*label.shape[:2], 1, 1)
-            label_p = label_p * class_indicator.expand_as(label_p)
+            class_indicator = class_indicator.expand_as(label_p)
+            label_p = label_p * (1 - class_indicator) + label * class_indicator
 
             l += torch.einsum(
                 "bcwh,bcwh->b", out, label_p
@@ -142,7 +143,6 @@ class ZhouLoss:
         kl = torch.sum(f) + torch.sum(b)
         assert kl >= -100  # TODO Inspect this, it should not be < 0
         return kl
-        # return self.model.mu.T @ self.model.mu * 1e-10
 
 
 def dice(logits, true, eps=1e-10):

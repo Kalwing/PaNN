@@ -37,6 +37,7 @@ from config import (
     METRICS,
     SEED,
     SECOND_STAGE_ITER,
+    SAVE_PRED_INTERVAL,
 )
 from dataloader import get_dataloader
 from utils import compute_distribution_dl
@@ -380,7 +381,7 @@ def run(
         )
 
         plot_pred(
-            train_loader.full_loader.dataset,
+            val_loader.dataset,
             net,
             n=3,
             device=device,
@@ -409,20 +410,26 @@ def run(
         base_path = RESULTS_FOLDER / TRAINING_NAME / "2nd_stage" / str(iter)
 
         # Compute YP
-        with torch.no_grad():
-            pred_path = RESULTS_FOLDER / TRAINING_NAME / "Predicted"
-            dataloader.save_preds(
-                train_loader, net, pred_path, device=device,
-            )
-            predicted_partials = [
-                dataloader.ImgPredDataset(
-                    str(partial), base_path=pred_path, split_type="train", randomize=False
+        if iter % SAVE_PRED_INTERVAL == 0:
+            with torch.no_grad():
+                pred_path = RESULTS_FOLDER / TRAINING_NAME / "Predicted"
+                dataloader.save_preds(
+                    train_loader, net, pred_path, device=device,
                 )
-                for partial in PARTIAL_IDS
-            ]
-            pred_label_loader = dataloader.ZhouLoader(
-                train_loader.full_loader.dataset, predicted_partials, batch_mul=BATCH_MUL
-            )
+                predicted_partials = [
+                    dataloader.ImgPredDataset(
+                        str(partial),
+                        base_path=pred_path,
+                        split_type="train",
+                        randomize=False,
+                    )
+                    for partial in PARTIAL_IDS
+                ]
+                pred_label_loader = dataloader.ZhouLoader(
+                    train_loader.full_loader.dataset,
+                    predicted_partials,
+                    batch_mul=BATCH_MUL,
+                )
 
         # update mu and nu
         print(f"ASCENT {iter+1}/{SECOND_STAGE_ITER}")
@@ -475,11 +482,7 @@ def run(
         save_field_in_csv(base_path / "descent" / TRAIN_CSV_NAME, training)
 
         plot_pred(
-            train_loader.full_loader.dataset,
-            net,
-            n=3,
-            device=device,
-            save_path=base_path,
+            val_loader.dataset, net, n=5, device=device, save_path=base_path,
         )
     torch.save(net.state_dict(), RESULTS_FOLDER / TRAINING_NAME / MODEL_NAME)
     return [RESULTS_FOLDER / TRAINING_NAME / "init" / TRAIN_CSV_NAME]
